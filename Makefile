@@ -1,46 +1,26 @@
-CLANG = clang
-LLC = llc
-LD = wasm-ld
+CLANG = clang-18
+LLC = llc-18
+LD = wasm-ld-18
 
-APP_SRC = app.c
-APP_OBJ_SRC := $(patsubst %.c, %.o, $(APP_SRC))
+all: toy_kernel.wasm toy_app_sum_requestor.wasm
 
-KERNEL_SRC = kernel.c
-KERNEL_OBJ_SRC := $(patsubst %.c, %.o, $(KERNEL_SRC))
+toy_kernel.ll: toy_kernel.c
+	$(CLANG) --target=wasm32 -emit-llvm -matomics -mmultimemory -mmutable-globals -c -S -std=c99 -fPIC -o $@ -nostdlib $<
 
-all: kernel app
+toy_kernel.o: toy_kernel.ll
+	$(LLC) -march=wasm32 --relocation-model=pic -filetype=obj -o $@ $<
 
-%.ll: %.c
-	$(CLANG) \
-		--target=wasm32	\
-		-emit-llvm \
-		-c \
-		-S \
-		-std=c99 \
-		-o $@ \
-		-nostdlib \
-		$<
+toy_kernel.wasm: toy_kernel.o
+	$(LD) --shared --experimental-pic -o $@ $^
 
-%.o: %.ll
-	$(LLC) \
-		-march=wasm32 \
-		-filetype=obj \
-		$<
+toy_app_sum_requestor.ll: toy_app_sum_requestor.c
+	$(CLANG) --target=wasm32 -emit-llvm -matomics -mmultimemory -mmutable-globals -c -S -std=c99 -o $@ -nostdlib $<
 
-app: $(APP_OBJ_SRC)
-	$(LD) \
-		--no-entry \
-		--strip-all \
-		--import-memory \
-		--export=__heap_base \
-		-o $@ \
-		$^
+toy_app_sum_requestor.o: toy_app_sum_requestor.ll
+	$(LLC) -march=wasm32 -filetype=obj -o $@ $<
 
-kernel: $(KERNEL_OBJ_SRC)
-	$(LD) \
-		--no-entry \
-		--strip-all \
-		--import-memory \
-		--export=__heap_base \
-		-o $@ \
-		$^
+toy_app_sum_requestor.wasm: toy_app_sum_requestor.o toy_kernel.wasm
+	$(LD) --entry=main -o $@ $^
+
+clean:
+	rm *.o *.ll *.wasm

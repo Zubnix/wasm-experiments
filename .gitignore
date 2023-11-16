@@ -1,0 +1,4 @@
+.idea
+*.ll
+*.o
+*.wasm
