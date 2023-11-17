@@ -1,6 +1,6 @@
 #include "toy_kernel.h"
 
-int main() {
+int main(void) {
     int user_sum;
     int a = 0;
     int b = 0;
