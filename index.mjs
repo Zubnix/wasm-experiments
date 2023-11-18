@@ -168,7 +168,10 @@ function print_str(addr) {
 async function main() {
     const wasmLoader = new LDWasm({print_int, print_str});
     // await wasmLoader.loadModule('toy_kernel.wasm')
-    await wasmLoader.loadModule('toy_app_a.wasm')
+    const module = await wasmLoader.loadModule('toy_app_a.wasm')
+    if(module.exports.main) {
+        module.exports.main()
+    }
 }
 
 window.onload = main
