@@ -31,10 +31,12 @@ function readVaruint32(array, idx) {
 
 /** Extracts the "dylib" Custom section from WebAssembly module, and parses it into an object.  */
 function parseDylink(module) {
-    let memorysize
-    let memoryalignment
-    let tablesize
-    let tablealignment
+    let memorySize
+    let memoryAlignment
+    let tableSize
+    let tableAlignment
+
+    let neededDynlibs = []
 
     const section = WebAssembly.Module.customSections(module, "dylink.0");
     let array = new Uint8Array(section[0]);
@@ -46,39 +48,52 @@ function parseDylink(module) {
         [length, idx] = readVaruint32(array, idx)
         const end = idx + length
         const payload = array.subarray(idx, end)
+        idx = end
 
         switch (type) {
             case 1: { // WASM_DYLINK_MEM_INFO
                 let subIdx = 0;
                 // begin readign actual data
-                [memorysize, subIdx] = readVaruint32(payload, subIdx);
-                [memoryalignment, subIdx] = readVaruint32(payload, subIdx);
-                [tablesize, subIdx] = readVaruint32(payload, subIdx);
-                [tablealignment] = readVaruint32(payload, subIdx);
+                [memorySize, subIdx] = readVaruint32(payload, subIdx);
+                [memoryAlignment, subIdx] = readVaruint32(payload, subIdx);
+                [tableSize, subIdx] = readVaruint32(payload, subIdx);
+                [tableAlignment, subIdx] = readVaruint32(payload, subIdx);
+                break;
             }
             case 2: { // WASM_DYLINK_NEEDED
-
+                let subIdx = 0;
+                let neededDynlibsCount
+                [neededDynlibsCount, subIdx] = readVaruint32(payload, subIdx);
+                for (let i = 0; i < neededDynlibsCount; i++) {
+                    let length;
+                    [length, subIdx] = readVaruint32(payload, subIdx);
+                    let path = utf8Decoder.decode(payload.subarray(subIdx, subIdx + length));
+                    neededDynlibs.push(path);
+                    subIdx += length;
+                }
+                break;
             }
             case 3: { // WASM_DYLINK_EXPORT_INFO
-
+                break;
             }
             case 4: { // WASM_DYLINK_IMPORT_INFO
-
+                break;
             }
         }
     }
 
     return {
-        memorysize,
-        memoryalignment,
-        tablesize,
-        tablealignment
+        memorySize,
+        memoryAlignment,
+        tableSize,
+        tableAlignment,
+        neededDynlibs
     };
 }
 
-class WasmLoader {
+class LDWasm {
     constructor(imports) {
-        this.dynamic_libraries = {};
+        this.dynamicLibraries = {};
         this.memory = new WebAssembly.Memory({initial: 1024});
         this.__indirect_function_table = new WebAssembly.Table({element: "anyfunc", initial: 0});
         this.__stack_pointer = new WebAssembly.Global({value: "i32", mutable: true}, STACK_SIZE);
@@ -87,43 +102,56 @@ class WasmLoader {
         this.imports = imports;
     }
 
-    #makeEnv() {
+    #makeEnv(dynLibs, neededFunctionImports) {
+        const exportEntries = dynLibs.flatMap(dynLib => Object.entries(dynLib.exports))
+            .filter(([exportedFunction])=>neededFunctionImports.includes(exportedFunction))
+        const importedExports = Object.fromEntries(exportEntries)
         return {
             memory: this.memory,
             __indirect_function_table: this.__indirect_function_table,
             __stack_pointer: this.__stack_pointer,
             __memory_base: this.__memory_base,
             __table_base: this.__table_base,
-            ...this.imports
+            ...this.imports,
+            ...importedExports
         };
     }
 
     async loadModule(path) {
-        if (this.dynamic_libraries[path] !== undefined) {
-            return this.dynamic_libraries[path];
+        if (this.dynamicLibraries[path] !== undefined) {
+            return this.dynamicLibraries[path];
         }
 
         const module = await WebAssembly.compileStreaming(fetch(path));
         const dylink = parseDylink(module);
+        const dynLibs = []
+        for (const neededDynlib of dylink.neededDynlibs) {
+            dynLibs.push(await this.loadModule(neededDynlib))
+        }
 
-        const env = this.#makeEnv();
-        env.__memory_base = roundUpAlign(env.__memory_base, dylink.memoryalignment);
-        env.__table_base = roundUpAlign(env.__table_base, dylink.tablealignment);
+        // TODO import for globals?
+        const neededFunctionImports = WebAssembly.Module.imports(module)
+            .filter(importEntry => importEntry.module === 'env' && importEntry.kind === 'function')
+            .map(importEntry => importEntry.name)
+
+        const env = this.#makeEnv(dynLibs, neededFunctionImports);
+        env.__memory_base = roundUpAlign(env.__memory_base, dylink.memoryAlignment);
+        env.__table_base = roundUpAlign(env.__table_base, dylink.tableAlignment);
 
         // Update values that will be used by next module
-        this.__memory_base = env.__memory_base + dylink.memorysize;
-        this.__table_base = env.__table_base + dylink.tablesize;
+        this.__memory_base = env.__memory_base + dylink.memorySize;
+        this.__table_base = env.__table_base + dylink.tableSize;
 
         this.__indirect_function_table.grow(this.__table_base - this.__indirect_function_table.length);
 
         const instance = await WebAssembly.instantiate(module, {env});
-        if (instance.exports.____wasm_apply_data_relocs) {
-            instance.exports.____wasm_apply_data_relocs()
+        if (instance.exports.__wasm_apply_data_relocs) {
+            instance.exports.__wasm_apply_data_relocs()
         }
         if (instance.exports.__wasm_call_ctors) {
             instance.exports.__wasm_call_ctors();
         }
-        this.dynamic_libraries[path] = instance;
+        this.dynamicLibraries[path] = instance;
         return instance;
     }
 }
@@ -138,8 +166,8 @@ function print_str(addr) {
 }
 
 async function main() {
-    const wasmLoader = new WasmLoader({print_int: print_int, print_str: print_str});
-    await wasmLoader.loadModule('toy_kernel.wasm')
+    const wasmLoader = new LDWasm({print_int, print_str});
+    // await wasmLoader.loadModule('toy_kernel.wasm')
     await wasmLoader.loadModule('toy_app_a.wasm')
 }
 
