@@ -31,38 +31,48 @@ function readVaruint32(array, idx) {
 
 /** Extracts the "dylib" Custom section from WebAssembly module, and parses it into an object.  */
 function parseDylink(module) {
-    const section = WebAssembly.Module.customSections(module, "dylink");
-    const array = new Uint8Array(section[0]);
-
-    let idx = 0;
-
     let memorysize
     let memoryalignment
     let tablesize
     let tablealignment
-    let needed_dynlibs_count;
 
-    [memorysize, idx] = readVaruint32(array, idx);
-    [memoryalignment, idx] = readVaruint32(array, idx);
-    [tablesize, idx] = readVaruint32(array, idx);
-    [tablealignment, idx] = readVaruint32(array, idx);
-    [needed_dynlibs_count, idx] = readVaruint32(array, idx);
+    const section = WebAssembly.Module.customSections(module, "dylink.0");
+    let array = new Uint8Array(section[0]);
 
-    const needed_dynlibs = [];
-    for (let i = 0; i < needed_dynlibs_count; i++) {
-        let length;
-        [length, idx] = readVaruint32(array, idx);
-        const path = utf8Decoder.decode(array.slice(idx, idx + length));
-        needed_dynlibs.push(path);
-        idx += length;
+    let idx = 0
+    while (idx < array.byteLength) {
+        const type = array[idx++]
+        let length
+        [length, idx] = readVaruint32(array, idx)
+        const end = idx + length
+        const payload = array.subarray(idx, end)
+
+        switch (type) {
+            case 1: { // WASM_DYLINK_MEM_INFO
+                let subIdx = 0;
+                // begin readign actual data
+                [memorysize, subIdx] = readVaruint32(payload, subIdx);
+                [memoryalignment, subIdx] = readVaruint32(payload, subIdx);
+                [tablesize, subIdx] = readVaruint32(payload, subIdx);
+                [tablealignment] = readVaruint32(payload, subIdx);
+            }
+            case 2: { // WASM_DYLINK_NEEDED
+
+            }
+            case 3: { // WASM_DYLINK_EXPORT_INFO
+
+            }
+            case 4: { // WASM_DYLINK_IMPORT_INFO
+
+            }
+        }
     }
 
     return {
         memorysize,
         memoryalignment,
         tablesize,
-        tablealignment,
-        needed_dynlibs
+        tablealignment
     };
 }
 
@@ -96,17 +106,9 @@ class WasmLoader {
         const module = await WebAssembly.compileStreaming(fetch(path));
         const dylink = parseDylink(module);
 
-        const dynlibs = [];
-        for (let path of dylink.needed_dynlibs) {
-            dynlibs.push(await this.loadModule(path));
-        }
-
         const env = this.#makeEnv();
         env.__memory_base = roundUpAlign(env.__memory_base, dylink.memoryalignment);
         env.__table_base = roundUpAlign(env.__table_base, dylink.tablealignment);
-        for (const library of dynlibs) {
-            Object.assign(env, library.exports);
-        }
 
         // Update values that will be used by next module
         this.__memory_base = env.__memory_base + dylink.memorysize;
@@ -114,8 +116,11 @@ class WasmLoader {
 
         this.__indirect_function_table.grow(this.__table_base - this.__indirect_function_table.length);
 
-        const instance = await WebAssembly.instantiate(module, {env: env});
-        if(instance.exports.__wasm_call_ctors) {
+        const instance = await WebAssembly.instantiate(module, {env});
+        if (instance.exports.____wasm_apply_data_relocs) {
+            instance.exports.____wasm_apply_data_relocs()
+        }
+        if (instance.exports.__wasm_call_ctors) {
             instance.exports.__wasm_call_ctors();
         }
         this.dynamic_libraries[path] = instance;
