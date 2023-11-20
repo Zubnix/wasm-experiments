@@ -10,7 +10,7 @@ int sum_fence = 0;
 
 /**
  * \brief Request to calculate the sum of 2 numbers and block until the result is available.
- * \param user_sum memory where the rsult of the sum will be stored
+ * \param user_sum process memory where the rsult of the sum will be stored
  * \param a first addend
  * \param b second addend
  */
@@ -27,8 +27,8 @@ void _syscall_request_sum(int *user_sum, const int a, const int b) {
 }
 
 /**
- * \brief Block until 2 addends of a sum become available.
- * \param user_addends memory where 2 addends of a sum will be stored
+ * \brief Block until 2 addends of a requested sum become available.
+ * \param user_addends process memory where the result of the sum will be stored
  */
 TOY_EXPORT
 void _syscall_notify_request_sum(int *user_addends) {
