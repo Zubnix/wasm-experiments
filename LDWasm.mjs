@@ -95,16 +95,16 @@ export class LDWasm {
     constructor(memory, imports = {}) {
         this.dynamicLibraries = {};
         this.memory = memory
-        this.__indirect_function_table = new WebAssembly.Table({element: "anyfunc", initial: 0});
-        this.__stack_pointer = new WebAssembly.Global({value: "i32", mutable: true}, STACK_SIZE);
         this.__memory_base = STACK_SIZE;
         this.__table_base = 0;
+        this.__indirect_function_table = new WebAssembly.Table({element: "anyfunc", initial: 0});
+        this.__stack_pointer = new WebAssembly.Global({value: "i32", mutable: true}, STACK_SIZE);
         this.imports = imports;
     }
 
     #makeEnv(dynLibs, neededFunctionImports) {
         const exportEntries = dynLibs.flatMap(dynLib => Object.entries(dynLib.exports))
-            .filter(([exportedFunction])=>neededFunctionImports.includes(exportedFunction))
+            .filter(([exportedFunction]) => neededFunctionImports.includes(exportedFunction))
         const importedExports = Object.fromEntries(exportEntries)
         return {
             memory: this.memory,
@@ -118,15 +118,18 @@ export class LDWasm {
     }
 
     async load(path) {
+        // TODO handle circular dependencies
         if (this.dynamicLibraries[path] !== undefined) {
-            return this.dynamicLibraries[path].instance;
+            return this.dynamicLibraries[path];
         }
 
         const module = await WebAssembly.compileStreaming(fetch(path));
         const dylink = parseDylink(module);
-        const dynLibs = []
+        const dynLibInstances = []
         for (const neededDynlib of dylink.neededDynlibs) {
-            dynLibs.push(await this.load(neededDynlib))
+            const { module, env } = await this.load(neededDynlib)
+            const instance = await initialize({ module, env })
+            dynLibInstances.push(instance)
         }
 
         // TODO import for globals?
@@ -134,24 +137,32 @@ export class LDWasm {
             .filter(importEntry => importEntry.module === 'env' && importEntry.kind === 'function')
             .map(importEntry => importEntry.name)
 
-        const env = this.#makeEnv(dynLibs, neededFunctionImports);
+        const env = this.#makeEnv(dynLibInstances, neededFunctionImports);
         env.__memory_base = roundUpAlign(env.__memory_base, dylink.memoryAlignment);
         env.__table_base = roundUpAlign(env.__table_base, dylink.tableAlignment);
 
         // Update values that will be used by next module
         this.__memory_base = env.__memory_base + dylink.memorySize;
         this.__table_base = env.__table_base + dylink.tableSize;
-
         this.__indirect_function_table.grow(this.__table_base - this.__indirect_function_table.length);
 
-        const instance = await WebAssembly.instantiate(module, {env});
-        if (instance.exports.__wasm_apply_data_relocs) {
-            instance.exports.__wasm_apply_data_relocs()
-        }
-        if (instance.exports.__wasm_call_ctors) {
-            instance.exports.__wasm_call_ctors();
-        }
-        this.dynamicLibraries[path] = { module, env, instance};
-        return instance;
+        this.dynamicLibraries[path] = {module, env};
+        return {module, env };
     }
+}
+
+export async function initialize({module, env}) {
+    const instance = await WebAssembly.instantiate(module, {
+        env: {
+            ...env,
+            __indirect_function_table: new WebAssembly.Table({element: "anyfunc", initial: 0})
+        }
+    });
+    if (instance.exports.__wasm_apply_data_relocs) {
+        instance.exports.__wasm_apply_data_relocs()
+    }
+    if (instance.exports.__wasm_call_ctors) {
+        instance.exports.__wasm_call_ctors();
+    }
+    return instance
 }

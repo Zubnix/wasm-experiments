@@ -1,8 +1,15 @@
-function main() {
+import {LDWasm} from "./LDWasm.mjs";
+
+async function main() {
     // FIXME we have to use a single shared memory object because llvm doesn't support wasm multi-memory yet.
-    const memory = new WebAssembly.Memory({initial: 1024, shared: true, maximum: 10240});
-    const process_a = new Worker('process.mjs', {type: 'module'})
-    process_a.postMessage({ path: 'toy_app_a.wasm', memory })
+    const ld = new LDWasm(
+        new WebAssembly.Memory({initial: 1024, shared: true, maximum: 10240}))
+
+    new Worker('process.mjs', {type: 'module'})
+        .postMessage({exec: await ld.load('toy_app_a.wasm')})
+
+    new Worker('process.mjs', {type: 'module'})
+        .postMessage({exec: ld.load('toy_app_a.wasm')})
 }
 
 window.onload = main

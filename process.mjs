@@ -1,13 +1,12 @@
-import {LDWasm} from './LDWasm.mjs';
+import {initialize} from './LDWasm.mjs';
 
-async function initialize({ path, memory, imports }) {
-    const loader = new LDWasm(memory, imports)
-    const instance = await loader.load(path)
+async function exec({ module, env }) {
+    const instance = await initialize({ module, env })
     if (instance.exports.main) {
         instance.exports.main()
     }
 }
 
 self.onmessage = ((event) => {
-        initialize(event.data)
+        exec(event.data.exec)
 })
